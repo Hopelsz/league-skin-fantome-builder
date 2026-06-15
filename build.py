@@ -18,7 +18,8 @@ import tempfile
 import time
 import urllib.request
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from multiprocessing import freeze_support
 from pathlib import Path
 
 HERE = Path(__file__).parent.resolve()
@@ -55,8 +56,11 @@ def http_json(url: str):
         return json.loads(r.read())
 
 
-def fetch_champion_catalog() -> tuple[str, dict[str, dict[int, str]], dict[str, dict[int, dict]]]:
-    """Returns (patch, {key: {skinNum: name}}, chroma_meta)."""
+
+
+
+def fetch_champion_catalog() -> tuple[str, dict, dict]:
+    """Returns (patch, catalog, chroma_meta)."""
     try:
         patch = http_json(CDRAGON_VERSIONS)[0]
     except Exception:
@@ -179,21 +183,47 @@ class SkinBuilder:
                 if "/skins/" in pl or "/animations/" in pl:
                     self.skin_bin_hashes[h] = path
 
-    def build_all(self, only_keys: list[str] | None, limit: int | None):
+    def build_all(self, only_keys: list[str] | None, limit: int | None, workers: int = 1):
         wads = sorted(self.champions_dir.glob("*.wad.client"))
         wads = [w for w in wads
                 if w.name.count(".") == 2
                 and "_" not in w.name.split(".", 1)[0]]
-        print(f"[builder] {len(wads)} champion WADs")
+        print(f"[builder] {len(wads)} champion WADs, {workers} worker(s)")
 
-        index: dict[str, dict[int, str]] = {}
+        # Build list of (wad_path, champ_key) to process
+        tasks = []
         for wad_path in wads:
             champ_key = wad_path.name.split(".", 1)[0]
             if only_keys and champ_key not in only_keys:
                 continue
-            built = self.build_champion(wad_path, champ_key, limit)
-            if built:
-                index[champ_key] = built
+            tasks.append((wad_path, champ_key))
+
+        index: dict[str, dict[int, str]] = {}
+        if workers <= 1:
+            for wad_path, champ_key in tasks:
+                built = self.build_champion(wad_path, champ_key, limit)
+                if built:
+                    index[champ_key] = built
+        else:
+            # Use ProcessPoolExecutor to bypass GIL for true parallelism
+            worker_args = [
+                (wad_path, champ_key, limit, self.champions_dir, self.output_dir,
+                 self.catalog, self.chroma_meta, self.skin_bin_hashes)
+                for wad_path, champ_key in tasks
+            ]
+            with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as ex:
+                futures = {
+                    ex.submit(_worker_build_champion, args): args[1]
+                    for args in worker_args
+                }
+                for fut in as_completed(futures):
+                    champ_key = futures[fut]
+                    try:
+                        _, built = fut.result()
+                        if built:
+                            index[champ_key] = built
+                    except Exception as e:
+                        print(f"  ! {champ_key}: FAILED: {e}")
 
         # index.json: split chromas/forms out of base skin list
         idx_champions: dict[str, dict] = {}
@@ -258,10 +288,35 @@ class SkinBuilder:
         if champ_lower not in characters or not characters[champ_lower]["skin0"]:
             return {}
 
+        # Pre-read ALL chunk data in a single file pass (avoids reopening WAD per skin)
+        # Store raw bytes in a separate dict since WADChunk uses __slots__
+        skin_data: dict[int, dict[str, bytes]] = {}   # {chunk_id: {"char:num": raw_bytes}}
+        char_skin0_data: dict[str, bytes] = {}        # {char_lower: skin0_raw}
+        anim_data: dict[int, dict[str, bytes]] = {}
+
+        with pyRitoFile.stream.BytesStream.reader(str(wad_path)) as bs:
+            for char, char_info in characters.items():
+                if char_info["skin0"]:
+                    char_info["skin0"].read_data(bs)
+                    char_skin0_data[char] = bytes(char_info["skin0"].data)
+                    char_info["skin0"].free_data()
+                for n, chunk in char_info["skinN"].items():
+                    chunk.read_data(bs)
+                    skin_data.setdefault(n, {})[char] = bytes(chunk.data)
+                    chunk.free_data()
+            for char, anim_info in animations.items():
+                for n, chunk in anim_info["skinN"].items():
+                    chunk.read_data(bs)
+                    anim_data.setdefault(n, {})[char] = bytes(chunk.data)
+                    chunk.free_data()
+
         main_skinN = characters[champ_lower]["skinN"]
         built: dict[int, str] = {}
         out_dir = self.output_dir / "skins" / champ_key
         out_dir.mkdir(parents=True, exist_ok=True)
+
+        def _safe(s: str) -> str:
+            return s.replace("/", "_").replace("\\", "_").replace(":", "").strip()
 
         count = 0
         for num, _chunk in sorted(main_skinN.items()):
@@ -273,9 +328,21 @@ class SkinBuilder:
                     continue
                 if isinstance(skips, list) and f"skin{num}.bin" in skips:
                     continue
+            # Resume: skip if output fantome already exists
+            info = self.chroma_meta.get(champ_key, {}).get(num)
+            if info:
+                expected_path = out_dir / _safe(info["parent_name"]) / f"{_safe(info['short_name'])}.fantome"
+            else:
+                expected_path = out_dir / f"{_safe(display)}.fantome"
+            if expected_path.exists():
+                built[num] = display
+                count += 1
+                if limit and count >= limit:
+                    break
+                continue
             try:
                 self._build_one(wad_path, champ_key, num, display,
-                                characters, animations, out_dir)
+                                skin_data, anim_data, out_dir)
                 built[num] = display
                 count += 1
                 if limit and count >= limit:
@@ -286,18 +353,12 @@ class SkinBuilder:
         return built
 
     def _build_one(self, wad_path, champ_key, num, display,
-                   characters, animations, out_dir):
+                   skin_data, anim_data, out_dir):
         """Build one fantome: skin{N}.bin -> skin0.bin + animation patch."""
         patched: list[tuple[str, bytes]] = []
 
-        for char_lower, info in characters.items():
-            if num not in info["skinN"]:
-                continue
-            chunk = info["skinN"][num]
-            with pyRitoFile.stream.BytesStream.reader(str(wad_path)) as bs:
-                chunk.read_data(bs)
-                skin_raw = bytes(chunk.data)
-                chunk.free_data()
+        char_skins = skin_data.get(num, {})
+        for char_lower, skin_raw in char_skins.items():
             try:
                 skin0_bytes = self._patch_skin_bin(char_lower, skin_raw, num)
             except RuntimeError as e:
@@ -305,14 +366,8 @@ class SkinBuilder:
                 continue
             patched.append((f"data/characters/{char_lower}/skins/skin0.bin", skin0_bytes))
 
-        for char_lower, info in animations.items():
-            if num not in info["skinN"]:
-                continue
-            chunk = info["skinN"][num]
-            with pyRitoFile.stream.BytesStream.reader(str(wad_path)) as bs:
-                chunk.read_data(bs)
-                anim_raw = bytes(chunk.data)
-                chunk.free_data()
+        char_anims = anim_data.get(num, {})
+        for char_lower, anim_raw in char_anims.items():
             try:
                 anim_bytes = self._patch_animation_bin(char_lower, anim_raw, num)
             except RuntimeError:
@@ -625,6 +680,32 @@ class SkinBuilder:
         return cls._ritobin_cached
 
 
+# ----- Multiprocessing worker -----------------------------------------------
+
+def _worker_init():
+    """Called once per worker process to load hashes."""
+    os.chdir(WORK_DIR)
+    CustomHashes.read_all_hashes()
+
+
+def _worker_build_champion(args_tuple):
+    """Top-level function for ProcessPoolExecutor (must be picklable)."""
+    (wad_path, champ_key, limit, champions_dir, output_dir,
+     catalog, chroma_meta, skin_bin_hashes) = args_tuple
+    builder = SkinBuilder.__new__(SkinBuilder)
+    builder.champions_dir = champions_dir
+    builder.output_dir = output_dir
+    builder.catalog = catalog
+    builder.chroma_meta = chroma_meta
+    builder.skin_bin_hashes = skin_bin_hashes
+    builder._cdtb_hash_dir = HERE / "pref" / "hashes" / "cdtb_hashes"
+    try:
+        return champ_key, builder.build_champion(wad_path, champ_key, limit)
+    except Exception as e:
+        print(f"  ! {champ_key}: FAILED: {e}")
+        return champ_key, {}
+
+
 # ----- Entrypoint ----------------------------------------------------------
 
 def main():
@@ -634,6 +715,12 @@ def main():
     ap.add_argument("--only", help="Comma-separated champion keys")
     ap.add_argument("--limit", type=int, help="Max N skins per champion")
     ap.add_argument("--refresh-hashes", action="store_true")
+    ap.add_argument("--workers", type=int, default=min(os.cpu_count() or 4, 12),
+                    help="Number of parallel processes (default: min(CPU count, 12))")
+    ap.add_argument("--chromas", action="store_true", default=None,
+                    help="Include chromas (skip prompt)")
+    ap.add_argument("--no-chromas", action="store_true",
+                    help="Exclude chromas (skip prompt)")
     args = ap.parse_args()
 
     league = Path(args.league)
@@ -653,14 +740,52 @@ def main():
     if args.limit: print(f"  Limit:  {args.limit}")
     print("=" * 60)
 
+    # Ask worker count interactively if not specified via CLI
+    cpu = os.cpu_count() or 4
+    if args.workers == min(cpu, 12):  # default value means user didn't specify
+        try:
+            ans = input(f"\nWorker count [{args.workers}]: ").strip()
+            if ans:
+                args.workers = int(ans)
+        except (EOFError, OSError, ValueError):
+            pass
+    print(f"  Workers: {args.workers}")
+
+    # Determine whether to include chromas (ask early before heavy work)
+    if args.no_chromas:
+        include_chromas = False
+        print("[config] chromas excluded (--no-chromas)")
+    elif args.chromas:
+        include_chromas = True
+        print("[config] chromas included (--chromas)")
+    else:
+        try:
+            ans = input("\nInclude chromas? [Y/n]: ").strip().lower()
+            include_chromas = ans not in ("n", "no")
+        except (EOFError, OSError):
+            include_chromas = True
+        print(f"[config] chromas {'included' if include_chromas else 'excluded'}")
+    print("")
+
     t0 = time.time()
     load_hashes(args.refresh_hashes)
     patch, catalog, chroma_meta = fetch_champion_catalog()
+
+    if not include_chromas:
+        # Remove chroma entries from catalog
+        for key in list(catalog.keys()):
+            cmap = chroma_meta.get(key, {})
+            for num in list(catalog[key].keys()):
+                meta = cmap.get(num)
+                if meta and meta.get("kind") == "chroma":
+                    del catalog[key][num]
+
     builder = SkinBuilder(champions_dir, out_dir, catalog, chroma_meta)
     builder._patch = patch
-    builder.build_all(only_keys=only, limit=args.limit)
+    builder.build_all(only_keys=only, limit=args.limit, workers=args.workers)
     print(f"\nDone in {time.time() - t0:.1f}s.")
 
 
 if __name__ == "__main__":
+    freeze_support()
     main()

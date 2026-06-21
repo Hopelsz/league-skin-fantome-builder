@@ -55,3 +55,8 @@ python build.py --league "M:\网络游戏\英雄联盟" --out .\out --only Ekko 
 ### 工作原理
 
 去看[这里](https://github.com/bettie9/LeagueSkins)。
+
+## Tip
+- 英雄名首字母需大写，例如：`Ahri、Ekko、Nami..`。
+- 英雄名需使用英名，如遇多个单词直接连在一起输入。例如：`Master Yi`应输入为`MasterYi`。
+- 下载全部.fantome文件，电脑会暂时有点卡，正常现象

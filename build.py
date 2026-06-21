@@ -45,7 +45,7 @@ for _d in (CDTBHashes.local_dir, CustomHashes.local_dir,
 # ----- CommunityDragon catalog ---------------------------------------------
 
 CDRAGON_VERSIONS = "https://ddragon.leagueoflegends.com/api/versions.json"
-CDRAGON_BASE     = "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default"
+CDRAGON_BASE     = "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/zh_cn"
 CDRAGON_SUMMARY  = f"{CDRAGON_BASE}/v1/champion-summary.json"
 CDRAGON_SKINS    = f"{CDRAGON_BASE}/v1/skins.json"
 
@@ -56,11 +56,8 @@ def http_json(url: str):
         return json.loads(r.read())
 
 
-
-
-
-def fetch_champion_catalog() -> tuple[str, dict, dict]:
-    """Returns (patch, catalog, chroma_meta)."""
+def fetch_champion_catalog() -> tuple[str, dict, dict, dict[str, str]]:
+    """Returns (patch, catalog, chroma_meta, key_to_chinese_name)."""
     try:
         patch = http_json(CDRAGON_VERSIONS)[0]
     except Exception:
@@ -69,6 +66,11 @@ def fetch_champion_catalog() -> tuple[str, dict, dict]:
     summary = http_json(CDRAGON_SUMMARY)
     skins   = http_json(CDRAGON_SKINS)
     id_to_key = {int(c["id"]): c["alias"] for c in summary if int(c["id"]) > 0}
+    # 建立英文key到中文名的映射（zh_cn数据源中name字段是中文）
+    key_to_chinese_name = {}
+    for c in summary:
+        if int(c["id"]) > 0:
+            key_to_chinese_name[c["alias"]] = c.get("name", c["alias"])
     print(f"[catalog] patch {patch} — {len(id_to_key)} champions, {len(skins)} skin entries")
 
     catalog: dict[str, dict[int, str]] = {key: {} for key in id_to_key.values()}
@@ -149,7 +151,7 @@ def fetch_champion_catalog() -> tuple[str, dict, dict]:
                         form_total += 1
 
     print(f"[catalog] +{chroma_total} chromas, +{form_total} forms")
-    return patch, catalog, chroma_meta
+    return patch, catalog, chroma_meta, key_to_chinese_name
 
 
 def load_hashes(refresh: bool):
@@ -167,11 +169,13 @@ def load_hashes(refresh: bool):
 
 class SkinBuilder:
     def __init__(self, champions_dir: Path, output_dir: Path, catalog: dict,
-                 chroma_meta: dict[str, dict[int, dict]] | None = None):
+                 chroma_meta: dict[str, dict[int, dict]] | None = None,
+                 key_to_chinese_name: dict[str, str] | None = None):
         self.champions_dir = champions_dir
         self.output_dir = output_dir
         self.catalog = catalog
         self.chroma_meta = chroma_meta or {}
+        self.key_to_chinese_name = key_to_chinese_name or {}
         self._cdtb_hash_dir = HERE / "pref" / "hashes" / "cdtb_hashes"
 
         # Pre-filter game hashes to per-character skin + animation bins
@@ -208,7 +212,7 @@ class SkinBuilder:
             # Use ProcessPoolExecutor to bypass GIL for true parallelism
             worker_args = [
                 (wad_path, champ_key, limit, self.champions_dir, self.output_dir,
-                 self.catalog, self.chroma_meta, self.skin_bin_hashes)
+                 self.catalog, self.chroma_meta, self.skin_bin_hashes, self.key_to_chinese_name)
                 for wad_path, champ_key in tasks
             ]
             with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as ex:
@@ -313,7 +317,9 @@ class SkinBuilder:
 
         main_skinN = characters[champ_lower]["skinN"]
         built: dict[int, str] = {}
-        out_dir = self.output_dir / "skins" / champ_key
+        # 使用中文英雄名作为文件夹名
+        champ_folder_name = self.key_to_chinese_name.get(champ_key, champ_key)
+        out_dir = self.output_dir / "skins" / champ_folder_name
         out_dir.mkdir(parents=True, exist_ok=True)
 
         def _safe(s: str) -> str:
@@ -692,13 +698,14 @@ def _worker_init():
 def _worker_build_champion(args_tuple):
     """Top-level function for ProcessPoolExecutor (must be picklable)."""
     (wad_path, champ_key, limit, champions_dir, output_dir,
-     catalog, chroma_meta, skin_bin_hashes) = args_tuple
+     catalog, chroma_meta, skin_bin_hashes, key_to_chinese_name) = args_tuple
     builder = SkinBuilder.__new__(SkinBuilder)
     builder.champions_dir = champions_dir
     builder.output_dir = output_dir
     builder.catalog = catalog
     builder.chroma_meta = chroma_meta
     builder.skin_bin_hashes = skin_bin_hashes
+    builder.key_to_chinese_name = key_to_chinese_name
     builder._cdtb_hash_dir = HERE / "pref" / "hashes" / "cdtb_hashes"
     try:
         return champ_key, builder.build_champion(wad_path, champ_key, limit)
@@ -716,11 +723,8 @@ def main():
     ap.add_argument("--only", help="Comma-separated champion keys")
     ap.add_argument("--limit", type=int, help="Max N skins per champion")
     ap.add_argument("--refresh-hashes", action="store_true")
-    # ap.add_argument("--workers", type=int, default=min(os.cpu_count() or 4, 12),
-    #                 help="Number of parallel processes (default: min(CPU count, 12))")
-    # 默认采用CPU核心数作为线程数
-    ap.add_argument("--workers", type=int, default=os.cpu_count() or 4,
-                    help="Number of parallel processes (default: CPU count)")
+    ap.add_argument("--workers", type=int, default=min(os.cpu_count() or 4, 12),
+                    help="Number of parallel processes (default: min(CPU count, 12))")
     # ap.add_argument("--chromas", action="store_true", default=None,
     #                 help="Include chromas (skip prompt)")
     # 默认包含炫彩
@@ -748,14 +752,14 @@ def main():
     print("=" * 60)
 
     # 如果未通过命令行界面指定线程数，则交互式询问工作线程数
-    # cpu = os.cpu_count() or 4
-    # if args.workers == min(cpu, 12):  # default value means user didn't specify
-    #     try:
-    #         ans = input(f"\nWorker count [{args.workers}]: ").strip()
-    #         if ans:
-    #             args.workers = int(ans)
-    #     except (EOFError, OSError, ValueError):
-    #         pass
+    cpu = os.cpu_count() or 4
+    if args.workers == min(cpu, 12):  # default value means user didn't specify
+        try:
+            ans = input(f"\nWorker count [{args.workers}]: ").strip()
+            if ans:
+                args.workers = int(ans)
+        except (EOFError, OSError, ValueError):
+            pass
     print(f"  Workers: {args.workers}")
 
     # Determine whether to include chromas (ask early before heavy work)
@@ -776,7 +780,7 @@ def main():
 
     t0 = time.time()
     load_hashes(args.refresh_hashes)
-    patch, catalog, chroma_meta = fetch_champion_catalog()
+    patch, catalog, chroma_meta, key_to_chinese_name = fetch_champion_catalog()
 
     if not include_chromas:
         # Remove chroma entries from catalog
@@ -787,7 +791,7 @@ def main():
                 if meta and meta.get("kind") == "chroma":
                     del catalog[key][num]
 
-    builder = SkinBuilder(champions_dir, out_dir, catalog, chroma_meta)
+    builder = SkinBuilder(champions_dir, out_dir, catalog, chroma_meta, key_to_chinese_name)
     builder._patch = patch
     builder.build_all(only_keys=only, limit=args.limit, workers=args.workers)
     # print(f"\nDone in {time.time() - t0:.1f}s.")

@@ -724,7 +724,7 @@ def main():
     # ap.add_argument("--chromas", action="store_true", default=None,
     #                 help="Include chromas (skip prompt)")
     # 默认包含炫彩
-       ap.add_argument("--chromas", action="store_true", default=True,
+    ap.add_argument("--chromas", action="store_true", default=True,
                     help="Include chromas (skip prompt)")
     ap.add_argument("--no-chromas", action="store_true",
                     help="Exclude chromas (skip prompt)")

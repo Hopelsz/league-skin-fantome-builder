@@ -246,7 +246,8 @@ class SkinBuilder:
             {"patch": getattr(self, "_patch", "unknown"), "champions": idx_champions},
             indent=2, ensure_ascii=False,
         ), encoding="utf-8")
-        print(f"[builder] wrote {idx_file}")
+        # print(f"[builder] wrote {idx_file}")
+        print(f"[下载完成] {idx_file}")
 
     def build_champion(self, wad_path: Path, champ_key: str, limit: int | None) -> dict[int, str]:
         names = self.catalog.get(champ_key)
@@ -715,9 +716,15 @@ def main():
     ap.add_argument("--only", help="Comma-separated champion keys")
     ap.add_argument("--limit", type=int, help="Max N skins per champion")
     ap.add_argument("--refresh-hashes", action="store_true")
-    ap.add_argument("--workers", type=int, default=min(os.cpu_count() or 4, 12),
-                    help="Number of parallel processes (default: min(CPU count, 12))")
-    ap.add_argument("--chromas", action="store_true", default=None,
+    # ap.add_argument("--workers", type=int, default=min(os.cpu_count() or 4, 12),
+    #                 help="Number of parallel processes (default: min(CPU count, 12))")
+    # 默认采用CPU核心数作为线程数
+    ap.add_argument("--workers", type=int, default=os.cpu_count() or 4,
+                    help="Number of parallel processes (default: CPU count)")
+    # ap.add_argument("--chromas", action="store_true", default=None,
+    #                 help="Include chromas (skip prompt)")
+    # 默认包含炫彩
+       ap.add_argument("--chromas", action="store_true", default=True,
                     help="Include chromas (skip prompt)")
     ap.add_argument("--no-chromas", action="store_true",
                     help="Exclude chromas (skip prompt)")
@@ -740,15 +747,15 @@ def main():
     if args.limit: print(f"  Limit:  {args.limit}")
     print("=" * 60)
 
-    # Ask worker count interactively if not specified via CLI
-    cpu = os.cpu_count() or 4
-    if args.workers == min(cpu, 12):  # default value means user didn't specify
-        try:
-            ans = input(f"\nWorker count [{args.workers}]: ").strip()
-            if ans:
-                args.workers = int(ans)
-        except (EOFError, OSError, ValueError):
-            pass
+    # 如果未通过命令行界面指定线程数，则交互式询问工作线程数
+    # cpu = os.cpu_count() or 4
+    # if args.workers == min(cpu, 12):  # default value means user didn't specify
+    #     try:
+    #         ans = input(f"\nWorker count [{args.workers}]: ").strip()
+    #         if ans:
+    #             args.workers = int(ans)
+    #     except (EOFError, OSError, ValueError):
+    #         pass
     print(f"  Workers: {args.workers}")
 
     # Determine whether to include chromas (ask early before heavy work)
@@ -783,7 +790,8 @@ def main():
     builder = SkinBuilder(champions_dir, out_dir, catalog, chroma_meta)
     builder._patch = patch
     builder.build_all(only_keys=only, limit=args.limit, workers=args.workers)
-    print(f"\nDone in {time.time() - t0:.1f}s.")
+    # print(f"\nDone in {time.time() - t0:.1f}s.")
+    print(f"\n构建完成 用时： {time.time() - t0:.1f}s.")
 
 
 if __name__ == "__main__":

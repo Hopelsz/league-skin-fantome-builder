@@ -26,10 +26,14 @@
 pip install -r requirements.txt
 ```
 ## 使用
-下载所有英雄的皮肤、炫彩和形态，需要约 3-5分钟。
+
+下载所有英雄的皮肤、炫彩和形态，需要约 3-5 分钟。
+
 ```powershell
-python build.py `--league "M:\网络游戏\英雄联盟" `--out .\out
+python build.py --league "M:\网络游戏\英雄联盟" --out .\out
 ```
+
+> **注意**：`--league` 路径是英雄联盟**安装根目录**（包含 `Game` 文件夹的那一层），不是 `Game` 目录本身。
 
 首次运行时将CommunityDragon哈希表（~50 MB）下载到 pref/hashes/cdtb_hashes/并缓存它们。在--refresh-hashes添加联盟补丁后重新拉取。
 
@@ -56,7 +60,51 @@ python build.py --league "M:\网络游戏\英雄联盟" --out .\out --only Ekko 
 
 去看[这里](https://github.com/bettie9/LeagueSkins)。
 
+### 输出结构
+
+```
+out/
+├── index.json              # 总索引（英雄/皮肤/炫彩列表）
+└── skins/
+    └── 阿狸/               # 英雄中文名
+        ├── 星之守护者阿狸.fantome
+        ├── KDA 阿狸/
+        │   ├── 炫彩1.fantome
+        │   └── 炫彩2.fantome
+        └── ...
+```
+
+## 常见问题
+
+### pip/python 命令找不到
+
+```powershell
+# 使用 Python 启动器（Windows 自带）
+py -m pip install -r requirements.txt
+py build.py --league "M:\网络游戏\英雄联盟" --out .\out
+```
+
+### SSL 证书错误
+
+如遇到 `SSL: CERTIFICATE_VERIFY_FAILED`，运行以下命令安装证书：
+```powershell
+pip install certifi
+```
+脚本已内置使用 certifi 证书修复此问题。
+
+### 部分英雄构建失败
+
+确保已安装所有依赖：
+```powershell
+pip install -r requirements.txt
+```
+如遇 `name 'pyzstd' is not defined`，手动安装：
+```powershell
+pip install pyzstd xxhash
+```
+
 ## Tip
-- 英雄名首字母需大写，例如：`Ahri、Ekko、Nami..`。
-- 英雄名需使用英名，如遇多个单词直接连在一起输入。例如：`Master Yi`应输入为`MasterYi`。
-- 下载全部.fantome文件，电脑会暂时有点卡，正常现象
+- 英雄名首字母需大写，例如：`Ahri、Ekko、Nami`。
+- 英雄名需使用英文名，如遇多个单词直接连在一起输入。例如：`Master Yi` 应输入为 `MasterYi`。
+- 下载全部 .fantome 文件时，电脑会暂时有点卡，属于正常现象。
+- 首次运行会下载约 50MB 的哈希表缓存到 `pref/hashes/cdtb_hashes/`，后续运行无需重复下载。

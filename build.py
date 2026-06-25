@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,10 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from multiprocessing import freeze_support
 from pathlib import Path
+
+# Fix SSL certificate issue on Windows Python
+import certifi
+ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
 
 HERE = Path(__file__).parent.resolve()
 

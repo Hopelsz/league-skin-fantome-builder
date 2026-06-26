@@ -217,7 +217,8 @@ class SkinBuilder:
             # Use ProcessPoolExecutor to bypass GIL for true parallelism
             worker_args = [
                 (wad_path, champ_key, limit, self.champions_dir, self.output_dir,
-                 self.catalog, self.chroma_meta, self.skin_bin_hashes, self.key_to_chinese_name)
+                 self.catalog, self.chroma_meta, self.skin_bin_hashes,
+                 self.key_to_chinese_name)
                 for wad_path, champ_key in tasks
             ]
             with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as ex:
@@ -377,14 +378,16 @@ class SkinBuilder:
                 print(f"      · skip {char_lower}: {e}")
                 continue
             patched.append((f"data/characters/{char_lower}/skins/skin0.bin", skin0_bytes))
-
-        char_anims = anim_data.get(num, {})
-        for char_lower, anim_raw in char_anims.items():
-            try:
-                anim_bytes = self._patch_animation_bin(char_lower, anim_raw, num)
-            except RuntimeError:
-                continue
-            patched.append((f"data/characters/{char_lower}/animations/skin0.bin", anim_bytes))
+        # 这部分是适配国服，使生成的文件更小
+        # Animation bin disabled — removing it saves ~6KB per fantome
+        # and is not required for the skin to work in most cases.
+        # char_anims = anim_data.get(num, {})
+        # for char_lower, anim_raw in char_anims.items():
+        #     try:
+        #         anim_bytes = self._patch_animation_bin(char_lower, anim_raw, num)
+        #     except RuntimeError:
+        #         continue
+        #     patched.append((f"data/characters/{char_lower}/animations/skin0.bin", anim_bytes))
 
         if not patched:
             raise RuntimeError("no characters patched")
@@ -461,7 +464,8 @@ class SkinBuilder:
         hex strings (FNV1a32). We compute the same form for our targets.
         """
         from LtMAO.pyRitoFile.helper import FNV1a  # type: ignore
-        char_cap = char_lower[:1].upper() + char_lower[1:]
+
+        bin_char_name = char_lower[:1].upper() + char_lower[1:]
 
         scdp_type = f"{FNV1a('SkinCharacterDataProperties'):08x}"
         rr_type   = f"{FNV1a('ResourceResolver'):08x}"
@@ -469,8 +473,8 @@ class SkinBuilder:
         # championSkinName field hash
         skin_name_field = f"{FNV1a('championSkinName'):08x}"
 
-        skin0_scdp = f"{FNV1a(f'Characters/{char_cap}/Skins/Skin0'):08x}"
-        skin0_rr   = f"{FNV1a(f'Characters/{char_cap}/Skins/Skin0/Resources'):08x}"
+        skin0_scdp = f"{FNV1a(f'Characters/{bin_char_name}/Skins/Skin0'):08x}"
+        skin0_rr   = f"{FNV1a(f'Characters/{bin_char_name}/Skins/Skin0/Resources'):08x}"
 
         scdp_entry = None
         for entry in skin_bin.entries or []:
@@ -511,7 +515,8 @@ class SkinBuilder:
         if ritobin is None:
             raise RuntimeError("ritobin_cli.exe not found in _vendor/")
 
-        char_cap = char_lower[:1].upper() + char_lower[1:]
+        bin_char_name = char_lower[:1].upper() + char_lower[1:]
+
         with tempfile.TemporaryDirectory() as td:
             in_bin  = Path(td) / "in.bin"
             in_txt  = Path(td) / "in.txt"
@@ -527,20 +532,21 @@ class SkinBuilder:
             text = in_txt.read_text(encoding="utf-8")
 
             # SCDP / RR / mResourceResolver entry-name renames
+            # Match the original character name in the bin text to replace
             text = re.sub(
-                rf'("Characters/{re.escape(char_cap)}/Skins/Skin){num}(" = SkinCharacterDataProperties)',
-                r'\g<1>0\g<2>', text)
+                rf'("Characters/[^/]+/Skins/Skin){num}(" = SkinCharacterDataProperties)',
+                rf'"Characters/{bin_char_name}/Skins/Skin0\2', text)
             text = re.sub(
-                rf'("Characters/{re.escape(char_cap)}/Skins/Skin){num}(/Resources" = ResourceResolver)',
-                r'\g<1>0\g<2>', text)
+                rf'("Characters/[^/]+/Skins/Skin){num}(/Resources" = ResourceResolver)',
+                rf'"Characters/{bin_char_name}/Skins/Skin0\2', text)
             text = re.sub(
-                rf'(mResourceResolver: link = "Characters/{re.escape(char_cap)}/Skins/Skin){num}(/Resources")',
-                r'\g<1>0\g<2>', text)
+                rf'(mResourceResolver: link = "Characters/[^/]+/Skins/Skin){num}(/Resources")',
+                rf'mResourceResolver: link = "Characters/{bin_char_name}/Skins/Skin0\2', text)
             text = re.sub(
                 rf'(championSkinName: string = ")\w+Skin{num}(")',
-                rf'\g<1>{char_cap}\g<2>', text)
+                rf'\g<1>{bin_char_name}\g<2>', text)
 
-            text = self._inline_gear_resources(text, char_cap, num)
+            text = self._inline_gear_resources(text, bin_char_name, num)
 
             in_txt.write_text(text, encoding="utf-8")
 
@@ -551,17 +557,20 @@ class SkinBuilder:
                 raise RuntimeError(f"ritobin text->bin: {r.stderr or r.stdout}")
             return out_bin.read_bytes()
 
-    def _patch_animation_bin(self, char_lower: str, anim_data: bytes, num: int) -> bytes:
+    @staticmethod
+    def _patch_animation_bin(char_lower: str, anim_data: bytes, num: int) -> bytes:
         """Surgical 4-byte FNV1a swap: AnimationGraphData entry name
         Skin<N> -> Skin0. pyRitoFile's parse-write is lossy so we patch
         in place."""
         from LtMAO.pyRitoFile.helper import FNV1a  # type: ignore
-        char_cap = char_lower[:1].upper() + char_lower[1:]
+
+        anim_char_name = char_lower[:1].upper() + char_lower[1:]
+
         candidates = [
-            (f"Characters/{char_cap}/Animations/Skin{num}",
-             f"Characters/{char_cap}/Animations/Skin0"),
-            (f"characters/{char_lower}/animations/skin{num}",
-             f"characters/{char_lower}/animations/skin0"),
+            (f"Characters/{anim_char_name}/Animations/Skin{num}",
+             f"Characters/{anim_char_name}/Animations/Skin0"),
+            (f"characters/{anim_char_name.lower()}/animations/skin{num}",
+             f"characters/{anim_char_name.lower()}/animations/skin0"),
         ]
         out = bytearray(anim_data)
         for old, new in candidates:
@@ -796,7 +805,8 @@ def main():
                 if meta and meta.get("kind") == "chroma":
                     del catalog[key][num]
 
-    builder = SkinBuilder(champions_dir, out_dir, catalog, chroma_meta, key_to_chinese_name)
+    builder = SkinBuilder(champions_dir, out_dir, catalog, chroma_meta,
+                          key_to_chinese_name)
     builder._patch = patch
     builder.build_all(only_keys=only, limit=args.limit, workers=args.workers)
     # print(f"\nDone in {time.time() - t0:.1f}s.")

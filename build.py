@@ -297,6 +297,7 @@ class SkinBuilder:
                 ent["skinN"][n] = chunk
 
         if champ_lower not in characters or not characters[champ_lower]["skin0"]:
+            print(f"  ! {champ_key}: SKIP - no skin0.bin in WAD (characters found: {list(characters.keys())})")
             return {}
 
         # Pre-read ALL chunk data in a single file pass (avoids reopening WAD per skin)

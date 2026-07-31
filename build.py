@@ -144,7 +144,7 @@ def fetch_champion_catalog() -> tuple[str, dict, dict, dict[str, str]]:
                             continue
                         tname = t.get("name") or f"{parent_name} (Stage {t.get('stage', tnum)})"
                         catalog[key][tnum] = tname
-                        short = t.get("stage") or t.get("name") or f"Stage {tnum}"
+                        short = t.get("shortName") or t.get("name") or t.get("stage") or f"Stage {tnum}"
                         if isinstance(short, int):
                             short = f"Stage {short}"
                         chroma_meta[key][tnum] = {

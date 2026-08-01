@@ -329,9 +329,6 @@ class SkinBuilder:
         out_dir = self.output_dir / "skins" / champ_folder_name
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        def _safe(s: str) -> str:
-            return s.replace("/", "_").replace("\\", "_").replace(":", "").strip()
-
         count = 0
         for num, _chunk in sorted(main_skinN.items()):
             if num not in names:
@@ -343,11 +340,7 @@ class SkinBuilder:
                 if isinstance(skips, list) and f"skin{num}.bin" in skips:
                     continue
             # Resume: skip if output fantome already exists
-            info = self.chroma_meta.get(champ_key, {}).get(num)
-            if info:
-                expected_path = out_dir / _safe(info["parent_name"]) / f"{_safe(info['short_name'])}.fantome"
-            else:
-                expected_path = out_dir / f"{_safe(display)}.fantome"
+            expected_path = self._resolve_output_path(out_dir, champ_key, num, display)
             if expected_path.exists():
                 built[num] = display
                 count += 1
@@ -365,6 +358,31 @@ class SkinBuilder:
                 print(f"  ! {champ_key} skin{num}: {e}")
         print(f"  · {champ_key}: {len(built)} fantomes")
         return built
+
+    def _resolve_output_path(self, out_dir: Path, champ_key: str, num: int, display: str) -> Path:
+        """Determine the output path for a .fantome file.
+
+        "联盟不朽" (Hall of Legends Immortal) form skins are placed directly
+        in the champion directory, NOT inside a parent-name subfolder.
+
+        Other form / chroma skins still use parent_name/short_name nesting.
+        Regular skins go directly in the champion directory.
+        """
+        def _safe(s: str) -> str:
+            return s.replace("/", "_").replace("\\", "_").replace(":", "").strip()
+
+        info = (self.chroma_meta or {}).get(champ_key, {}).get(num)
+        if info:
+            short = info["short_name"]
+            # 联盟不朽皮肤放在英雄目录下，不建父目录
+            if "联盟不朽" in short:
+                return out_dir / f"{_safe(short)}.fantome"
+            # 其他炫彩/形态放在父名称子目录下
+            parent = out_dir / _safe(info["parent_name"])
+            parent.mkdir(parents=True, exist_ok=True)
+            return parent / f"{_safe(short)}.fantome"
+        # 普通皮肤直接放英雄目录下
+        return out_dir / f"{_safe(display)}.fantome"
 
     def _build_one(self, wad_path, champ_key, num, display,
                    skin_data, anim_data, out_dir):
@@ -394,15 +412,7 @@ class SkinBuilder:
             raise RuntimeError("no characters patched")
 
         # Output path with chroma/form parent grouping
-        def _safe(s: str) -> str:
-            return s.replace("/", "_").replace("\\", "_").replace(":", "").strip()
-        info = self.chroma_meta.get(champ_key, {}).get(num)
-        if info:
-            parent = out_dir / _safe(info["parent_name"])
-            parent.mkdir(parents=True, exist_ok=True)
-            out_path = parent / f"{_safe(info['short_name'])}.fantome"
-        else:
-            out_path = out_dir / f"{_safe(display)}.fantome"
+        out_path = self._resolve_output_path(out_dir, champ_key, num, display)
 
         meta = {
             "Name": display, "Author": "Sunshine Builder",

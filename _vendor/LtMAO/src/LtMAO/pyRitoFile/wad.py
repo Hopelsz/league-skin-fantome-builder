@@ -84,6 +84,8 @@ class WADHasher:
     
     @staticmethod
     def raw_to_hex(raw):
+        if isinstance(raw, str):
+            raw = raw.encode('utf-8')
         return f'{xxh64(raw.lower()).intdigest():016x}'
 
     @staticmethod
@@ -101,6 +103,8 @@ class WADHasher:
 
     @staticmethod
     def raw_or_hex_to_hash(raw_or_hex):
+        if isinstance(raw_or_hex, str):
+            raw_or_hex = raw_or_hex.encode('utf-8')
         if len(raw_or_hex) != 16: return xxh64(raw_or_hex.lower()).intdigest()
         try:
             return int(raw_or_hex, 16)

@@ -2,3 +2,4 @@ requests
 pyzstd
 xxhash
 certifi
+PySide6
